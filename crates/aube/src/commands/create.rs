@@ -1,5 +1,5 @@
 use super::dlx::{self, DlxArgs};
-use clap::{Args, CommandFactory};
+use clap::{Args, Command};
 use miette::miette;
 
 #[derive(Debug, Args)]
@@ -41,9 +41,7 @@ pub async fn run(args: CreateArgs) -> miette::Result<()> {
     // flags (including `--help`) belong to the scaffold binary.
     let first = params.first().map(String::as_str);
     if matches!(first, None | Some("--help" | "-h")) {
-        crate::Cli::command()
-            .find_subcommand_mut("create")
-            .expect("create is a registered subcommand")
+        CreateArgs::augment_args(Command::new("create"))
             .print_help()
             .map_err(|e| miette!("failed to render help: {e}"))?;
         println!();

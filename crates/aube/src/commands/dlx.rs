@@ -1,5 +1,5 @@
 use super::install::{FrozenMode, InstallOptions};
-use clap::{Args, CommandFactory};
+use clap::{Args, Command};
 use miette::{Context, IntoDiagnostic, miette};
 
 #[derive(Debug, Args)]
@@ -76,9 +76,7 @@ pub async fn run(args: DlxArgs) -> miette::Result<()> {
     // belong to the installed binary.
     let first = params.first().map(String::as_str);
     if matches!(first, None | Some("--help" | "-h")) && package.is_empty() {
-        crate::Cli::command()
-            .find_subcommand_mut("dlx")
-            .expect("dlx is a registered subcommand")
+        DlxArgs::augment_args(Command::new("dlx"))
             .print_help()
             .map_err(|e| miette!("failed to render help: {e}"))?;
         println!();

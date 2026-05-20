@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "native/aube_nif"]
 resolver = "3"
 
 [profile.release]

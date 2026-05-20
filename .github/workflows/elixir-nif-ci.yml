@@ -1,0 +1,77 @@
+name: elixir-nif-ci
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "lib/**"
+      - "mix.exs"
+      - "native/aube_nif/**"
+      - "test/**/*.exs"
+      - ".github/workflows/elixir-nif-ci.yml"
+  push:
+    branches: ["elixir-nif"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  AUBE_BUILD: "1"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  source-build:
+    name: Source-build NIF and integration tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Erlang and Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.18"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: elixir-nif
+          save-if: ${{ github.ref == 'refs/heads/elixir-nif' }}
+
+      - name: Fetch Mix dependencies
+        run: mix deps.get
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check Elixir formatting
+        run: mix format --check-formatted
+
+      - name: Test embedded Rust install API
+        run: cargo test -p aube embedded --lib --no-default-features
+
+      - name: Compile NIF crate
+        run: cargo test -p aube_nif
+
+      - name: Compile Elixir source-build path
+        run: mix compile --warnings-as-errors
+
+      - name: Test Elixir integration
+        run: mix test
