@@ -46,6 +46,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AUBE_PRIMER_TOP");
     println!("cargo:rerun-if-env-changed=AUBE_PRIMER_VERSION_CAP");
     println!("cargo:rerun-if-env-changed=AUBE_REQUIRE_PRIMER");
+    println!("cargo:rerun-if-env-changed=AUBE_SKIP_PRIMER_GENERATION");
     println!("cargo:rerun-if-changed={}", source.display());
     let json = source.with_extension("json");
     println!("cargo:rerun-if-changed={}", json.display());
@@ -57,7 +58,9 @@ fn main() {
                 source.display()
             );
         }
-        let generated = if json.is_file() {
+        let generated = if primer_generation_skipped() {
+            false
+        } else if json.is_file() {
             compress_json_primer(&json, &source);
             let _ = std::fs::remove_file(&json);
             true
@@ -229,6 +232,13 @@ fn write_package_blob(out_dir: &Path, compressed: &[u8]) {
 fn primer_required() -> bool {
     matches!(
         std::env::var("AUBE_REQUIRE_PRIMER").as_deref(),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+fn primer_generation_skipped() -> bool {
+    matches!(
+        std::env::var("AUBE_SKIP_PRIMER_GENERATION").as_deref(),
         Ok("1" | "true" | "TRUE" | "yes" | "YES")
     )
 }

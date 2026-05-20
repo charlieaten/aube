@@ -8,3 +8,8 @@
 /.claude/
 /crates/aube-resolver/data/primer-top*.json
 /crates/aube-resolver/data/primer-top*.rkyv.zst
+/_build
+/deps
+/priv
+/native/aube_nif/target
+/checksum-*.exs

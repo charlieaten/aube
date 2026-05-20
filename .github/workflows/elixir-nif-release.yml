@@ -1,0 +1,268 @@
+name: elixir-nif-release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths-ignore:
+      - "checksum-*.exs"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  AUBE_SKIP_PRIMER_GENERATION: "1"
+  AUBE_NIF_RELEASE_CHANNEL: main
+
+jobs:
+  prepare-release:
+    name: Prepare main release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Precompiled Aube NIF artifacts for the latest main branch build."
+          if gh release view "$AUBE_NIF_RELEASE_CHANNEL" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release edit "$AUBE_NIF_RELEASE_CHANNEL" \
+              --repo "${{ github.repository }}" \
+              --title "Aube main precompiled NIFs" \
+              --notes "$notes" \
+              --prerelease
+          else
+            gh release create "$AUBE_NIF_RELEASE_CHANNEL" \
+              --repo "${{ github.repository }}" \
+              --target "$GITHUB_SHA" \
+              --title "Aube main precompiled NIFs" \
+              --notes "$notes" \
+              --prerelease
+          fi
+
+  build:
+    name: NIF ${{ matrix.nif }} - ${{ matrix.job.target }}
+    runs-on: ${{ matrix.job.os }}
+    timeout-minutes: 60
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        nif: ["2.15"]
+        job:
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - {
+              target: aarch64-unknown-linux-gnu,
+              os: ubuntu-22.04,
+              use-cross: true,
+            }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - {
+              target: aarch64-unknown-linux-musl,
+              os: ubuntu-22.04,
+              use-cross: true,
+            }
+          - {
+              target: x86_64-unknown-linux-musl,
+              os: ubuntu-22.04,
+              use-cross: true,
+            }
+          - { target: x86_64-pc-windows-msvc, os: windows-2022 }
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Extract package version
+        id: version
+        shell: bash
+        run: |
+          project_version="$(sed -n 's/^  @version "\(.*\)"/\1/p' mix.exs | head -n1)"
+          if [ -z "$project_version" ]; then
+            echo "::error::could not extract @version from mix.exs"
+            exit 1
+          fi
+          echo "project-version=$project_version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.job.target }}
+
+      - name: Install Linux build dependencies
+        if: startsWith(matrix.job.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: Build precompiled NIF
+        id: build-native
+        if: matrix.job.use-cross != true
+        shell: bash
+        env:
+          PROJECT_VERSION: ${{ steps.version.outputs.project-version }}
+          TARGET: ${{ matrix.job.target }}
+          NIF_VERSION: ${{ matrix.nif }}
+          RUSTLER_NIF_VERSION: ${{ matrix.nif }}
+        run: |
+          cargo build --package aube_nif --target "$TARGET" --release
+
+          lib_prefix="lib"
+          lib_suffix=".so"
+          final_suffix=".so"
+          case "$TARGET" in
+            *-apple-*)
+              lib_suffix=".dylib"
+              final_suffix=".so"
+              ;;
+            *-pc-windows-*)
+              lib_prefix=""
+              lib_suffix=".dll"
+              final_suffix=".dll"
+              ;;
+          esac
+
+          lib_name="${lib_prefix}aube_nif${lib_suffix}"
+          final_name="${lib_prefix}aube_nif-v${PROJECT_VERSION}-nif-${NIF_VERSION}-${TARGET}${final_suffix}"
+          tarball="${final_name}.tar.gz"
+          lib_dir="target/${TARGET}/release"
+
+          cp "${lib_dir}/${lib_name}" "${lib_dir}/${final_name}"
+          tar -czf "$tarball" -C "$lib_dir" "$final_name"
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            file_sha256="$(sha256sum "$tarball" | cut -d' ' -f1)"
+          else
+            file_sha256="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
+          fi
+
+          echo "file-name=$tarball" >> "$GITHUB_OUTPUT"
+          echo "file-path=$tarball" >> "$GITHUB_OUTPUT"
+          echo "file-sha256=$file_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Build precompiled NIF with cross
+        id: build-cross
+        if: matrix.job.use-cross == true
+        uses: philss/rustler-precompiled-action@v1.1.5
+        env:
+          CARGO_TARGET_DIR: target
+        with:
+          project-name: aube_nif
+          project-version: ${{ steps.version.outputs.project-version }}
+          target: ${{ matrix.job.target }}
+          nif-version: ${{ matrix.nif }}
+          use-cross: true
+          project-dir: "native/aube_nif"
+
+      - name: Capture NIF artifact path
+        id: build-crate
+        shell: bash
+        run: |
+          file_name="${{ steps.build-native.outputs.file-name }}${{ steps.build-cross.outputs.file-name }}"
+          file_path="${{ steps.build-native.outputs.file-path }}${{ steps.build-cross.outputs.file-path }}"
+          if [ -z "$file_name" ] || [ -z "$file_path" ]; then
+            echo "::error::precompiled NIF build step did not produce artifact outputs"
+            exit 1
+          fi
+          echo "file-name=$file_name" >> "$GITHUB_OUTPUT"
+          echo "file-path=$file_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.build-crate.outputs.file-name }}
+          path: ${{ steps.build-crate.outputs.file-path }}
+
+      - name: Ensure GitHub release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          notes="Precompiled Aube NIF artifacts for the latest main branch build."
+          if gh release view "$AUBE_NIF_RELEASE_CHANNEL" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release edit "$AUBE_NIF_RELEASE_CHANNEL" \
+              --repo "${{ github.repository }}" \
+              --title "Aube main precompiled NIFs" \
+              --notes "$notes" \
+              --prerelease
+          else
+            gh release create "$AUBE_NIF_RELEASE_CHANNEL" \
+              --repo "${{ github.repository }}" \
+              --target "$GITHUB_SHA" \
+              --title "Aube main precompiled NIFs" \
+              --notes "$notes" \
+              --prerelease || gh release view "$AUBE_NIF_RELEASE_CHANNEL" --repo "${{ github.repository }}" >/dev/null
+          fi
+
+      - name: Attach artifact to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload "$AUBE_NIF_RELEASE_CHANNEL" "${{ steps.build-crate.outputs.file-path }}" --clobber --repo "${{ github.repository }}"
+
+      - name: Attest NIF artifact
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.build-crate.outputs.file-path }}
+
+  checksum:
+    name: Generate checksum helper output
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: refs/heads/main
+
+      - name: Download NIF workflow artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: precompiled-nifs
+          pattern: "*aube_nif*.tar.gz"
+          merge-multiple: true
+
+      - name: Generate checksum file
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(precompiled-nifs/*aube_nif*.tar.gz)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no precompiled NIF artifacts were downloaded"
+            exit 1
+          fi
+
+          lines_file="$(mktemp)"
+          for file in "${files[@]}"; do
+            name="$(basename "$file")"
+            read -r hash _ < <(sha256sum "$file")
+            printf '  "%s" => "sha256:%s",\n' "$name" "$hash" >> "$lines_file"
+          done
+
+          {
+            printf '%%{\n'
+            sort "$lines_file"
+            printf '}\n'
+          } > checksum-Elixir.Aube.Native.exs
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rustler-precompiled-checksum
+          path: checksum-*.exs
+
+      - name: Commit checksum file
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f checksum-*.exs
+          if git diff --cached --quiet; then
+            echo "Checksum file is already up to date"
+          else
+            git commit -m "Update main precompiled NIF checksums"
+            git push origin HEAD:refs/heads/main
+          fi

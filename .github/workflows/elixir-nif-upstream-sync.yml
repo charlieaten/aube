@@ -1,0 +1,96 @@
+name: elixir-nif-upstream-sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 7 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  AUBE_BUILD: "1"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  rebase-and-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: elixir-nif
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/endevco/aube.git
+          git fetch upstream main
+
+      - name: Stop when already up to date
+        id: freshness
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "elixir-nif already contains upstream/main"
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase patch stack
+        if: steps.freshness.outputs.up_to_date != 'true'
+        run: |
+          branch="sync/upstream-${GITHUB_RUN_ID}"
+          git checkout -b "$branch"
+          git rebase upstream/main
+          echo "SYNC_BRANCH=$branch" >> "$GITHUB_ENV"
+
+      - name: Install native build dependencies
+        if: steps.freshness.outputs.up_to_date != 'true'
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: Set up Rust
+        if: steps.freshness.outputs.up_to_date != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Erlang and Elixir
+        if: steps.freshness.outputs.up_to_date != 'true'
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.18"
+
+      - name: Fetch Mix dependencies
+        if: steps.freshness.outputs.up_to_date != 'true'
+        run: mix deps.get
+
+      - name: Run Rust embedded tests
+        if: steps.freshness.outputs.up_to_date != 'true'
+        run: cargo test -p aube embedded --lib --no-default-features
+
+      - name: Run Elixir tests
+        if: steps.freshness.outputs.up_to_date != 'true'
+        run: mix test
+
+      - name: Push sync branch
+        if: steps.freshness.outputs.up_to_date != 'true'
+        run: git push origin "$SYNC_BRANCH"
+
+      - name: Open upstream sync PR
+        if: steps.freshness.outputs.up_to_date != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --base elixir-nif \
+            --head "$SYNC_BRANCH" \
+            --title "Rebase elixir-nif onto upstream/main" \
+            --body "Automated weekly rebase of the Elixir NIF patch stack onto upstream/main. CI passed before this PR was opened."
