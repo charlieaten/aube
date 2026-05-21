@@ -27,7 +27,10 @@ use aube_lockfile::dep_path_filename::dep_path_to_filename;
 use aube_store::PackageIndex;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 /// The aube version reported for `engines.aube` checks. Compiled in
 /// via `env!` so it always matches the running binary.
@@ -84,15 +87,38 @@ pub fn resolve_node_version(override_: Option<&str>) -> Option<String> {
 }
 
 fn probe_node_version() -> Option<String> {
-    let output = std::process::Command::new("node")
+    let mut child = std::process::Command::new("node")
         .arg("--version")
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    if !output.status.success() {
-        return None;
+
+    // Node version managers occasionally wedge when launched from an embedded
+    // host VM. Treat a stuck probe like "Node unavailable" instead of hanging
+    // the whole install; the engine checker already skips Node checks on None.
+    let started = Instant::now();
+    loop {
+        match child.try_wait().ok()? {
+            Some(status) if status.success() => {
+                let mut stdout = Vec::new();
+                child.stdout.take()?.read_to_end(&mut stdout).ok()?;
+                let _ = child.wait();
+                let s = String::from_utf8(stdout).ok()?;
+                return Some(s.trim().trim_start_matches('v').to_string());
+            }
+            Some(_) => {
+                let _ = child.wait();
+                return None;
+            }
+            None if started.elapsed() >= Duration::from_secs(2) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
     }
-    let s = String::from_utf8(output.stdout).ok()?;
-    Some(s.trim().trim_start_matches('v').to_string())
 }
 
 /// Test whether `version` satisfies `range`. A version or range we can't

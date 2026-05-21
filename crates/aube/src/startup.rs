@@ -286,7 +286,8 @@ pub(crate) fn init_logging(cli: &Cli, effective_level: LogLevel) {
                     .flatten_event(true)
                     .with_writer(crate::progress::PausingWriter),
             )
-            .init();
+            .try_init()
+            .ok();
     } else if drop_timestamp {
         registry
             .with(
@@ -294,11 +295,13 @@ pub(crate) fn init_logging(cli: &Cli, effective_level: LogLevel) {
                     .without_time()
                     .with_writer(crate::progress::PausingWriter),
             )
-            .init();
+            .try_init()
+            .ok();
     } else {
         registry
             .with(tracing_subscriber::fmt::layer().with_writer(crate::progress::PausingWriter))
-            .init();
+            .try_init()
+            .ok();
     }
 
     let force_text = matches!(

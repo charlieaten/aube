@@ -1,0 +1,17 @@
+[package]
+name = "aube_beam_nif"
+version = "1.15.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aube = { path = "../aube", default-features = false }
+rustler = "0.37.3"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }

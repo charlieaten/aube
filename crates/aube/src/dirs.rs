@@ -235,6 +235,10 @@ pub fn set_cwd(path: &Path) -> miette::Result<()> {
     Ok(())
 }
 
+pub fn reset_cwd() {
+    *CWD.write().expect("cwd lock poisoned") = None;
+}
+
 /// Canonicalize a path to its on-disk form using a "native" (non-verbatim)
 /// Windows path.
 ///

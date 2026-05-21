@@ -1,6 +1,6 @@
 use std::path::Path;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{OnceLock, RwLock};
 
 use aube_registry::client::RegistryClient;
 use aube_registry::config::NpmConfig;
@@ -9,13 +9,20 @@ use miette::{Context, IntoDiagnostic, miette};
 use super::{CatalogMap, config, install};
 
 /// Process-wide snapshot of the top-level `--frozen-lockfile` /
-/// `--no-frozen-lockfile` / `--prefer-frozen-lockfile` flags. Set once
-/// by `async_main` before any command runs so downstream helpers
+/// `--no-frozen-lockfile` / `--prefer-frozen-lockfile` flags. Set
+/// by command entry points before any command runs so downstream helpers
 /// (`ensure_installed`, chained `install::run` calls from
 /// `add`/`remove`/`update`/…) can pick them up without plumbing a
 /// context struct through every command signature.
-static GLOBAL_FROZEN: OnceLock<Option<install::FrozenOverride>> = OnceLock::new();
-static GLOBAL_VIRTUAL_STORE: OnceLock<install::GlobalVirtualStoreFlags> = OnceLock::new();
+///
+/// These slots are resettable rather than `OnceLock`s because the embedded
+/// Rust API is called multiple times in one BEAM VM.
+static GLOBAL_FROZEN: RwLock<Option<install::FrozenOverride>> = RwLock::new(None);
+static GLOBAL_VIRTUAL_STORE: RwLock<install::GlobalVirtualStoreFlags> =
+    RwLock::new(install::GlobalVirtualStoreFlags {
+        enable: false,
+        disable: false,
+    });
 static SKIP_AUTO_INSTALL_ON_PM_MISMATCH: AtomicBool = AtomicBool::new(false);
 
 /// Process-wide registry override from the top-level `--registry=<url>`
@@ -30,7 +37,7 @@ static REGISTRY_OVERRIDE: RwLock<Option<String>> = RwLock::new(None);
 /// `ResolveCtx::cli` so any caller of `make_client` (install, add,
 /// publish, audit, …) honors the global flags without each touching the
 /// fetch wiring directly. Empty when no flags were set.
-static FETCH_CLI_OVERRIDES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+static FETCH_CLI_OVERRIDES: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new());
 
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct GlobalOutputFlags {
@@ -38,22 +45,27 @@ pub(crate) struct GlobalOutputFlags {
     pub silent: bool,
 }
 
-static GLOBAL_OUTPUT: OnceLock<GlobalOutputFlags> = OnceLock::new();
+static GLOBAL_OUTPUT: RwLock<GlobalOutputFlags> = RwLock::new(GlobalOutputFlags {
+    ndjson: false,
+    silent: false,
+});
 
 pub(crate) fn set_registry_override(url: Option<String>) {
     *REGISTRY_OVERRIDE.write().expect("registry lock poisoned") =
         url.map(|u| aube_registry::config::normalize_registry_url_pub(&u));
 }
 
-/// Record the `--fetch-*` global flag bag once per process. Idempotent
-/// — second calls (e.g. from a unit test that re-runs `async_main`) are
-/// silently ignored, matching the other `set_global_*` helpers.
 pub(crate) fn set_fetch_cli_overrides(flags: Vec<(String, String)>) {
-    let _ = FETCH_CLI_OVERRIDES.set(flags);
+    *FETCH_CLI_OVERRIDES
+        .write()
+        .expect("fetch overrides lock poisoned") = flags;
 }
 
-pub(crate) fn fetch_cli_overrides() -> &'static [(String, String)] {
-    FETCH_CLI_OVERRIDES.get().map(Vec::as_slice).unwrap_or(&[])
+pub(crate) fn fetch_cli_overrides() -> Vec<(String, String)> {
+    FETCH_CLI_OVERRIDES
+        .read()
+        .expect("fetch overrides lock poisoned")
+        .clone()
 }
 
 pub(crate) fn set_skip_auto_install_on_package_manager_mismatch(skip: bool) {
@@ -82,32 +94,44 @@ pub(crate) fn load_npm_config(dir: &std::path::Path) -> NpmConfig {
     config
 }
 
-/// Record the global frozen-lockfile override snapshot. Called once per
-/// process from `async_main`.
+/// Record the global frozen-lockfile override snapshot.
 pub(crate) fn set_global_frozen_override(flags: Option<install::FrozenOverride>) {
-    let _ = GLOBAL_FROZEN.set(flags);
+    *GLOBAL_FROZEN.write().expect("frozen lock poisoned") = flags;
 }
 
 pub(crate) fn set_global_virtual_store_flags(flags: install::GlobalVirtualStoreFlags) {
-    let _ = GLOBAL_VIRTUAL_STORE.set(flags);
+    *GLOBAL_VIRTUAL_STORE
+        .write()
+        .expect("virtual store lock poisoned") = flags;
 }
 
 pub(crate) fn set_global_output_flags(flags: GlobalOutputFlags) {
-    let _ = GLOBAL_OUTPUT.set(flags);
+    *GLOBAL_OUTPUT.write().expect("output lock poisoned") = flags;
+}
+
+pub(crate) fn reset_invocation_state() {
+    set_registry_override(None);
+    set_fetch_cli_overrides(Vec::new());
+    set_global_frozen_override(None);
+    set_global_virtual_store_flags(install::GlobalVirtualStoreFlags::default());
+    set_global_output_flags(GlobalOutputFlags::default());
+    set_skip_auto_install_on_package_manager_mismatch(false);
 }
 
 /// Read the recorded global frozen-lockfile override snapshot, or
 /// `None` if none was set — e.g. in unit tests that bypass `async_main`.
 pub(crate) fn global_frozen_override() -> Option<install::FrozenOverride> {
-    GLOBAL_FROZEN.get().copied().unwrap_or_default()
+    *GLOBAL_FROZEN.read().expect("frozen lock poisoned")
 }
 
 pub(crate) fn global_virtual_store_flags() -> install::GlobalVirtualStoreFlags {
-    GLOBAL_VIRTUAL_STORE.get().copied().unwrap_or_default()
+    *GLOBAL_VIRTUAL_STORE
+        .read()
+        .expect("virtual store lock poisoned")
 }
 
 pub(crate) fn global_output_flags() -> GlobalOutputFlags {
-    GLOBAL_OUTPUT.get().copied().unwrap_or_default()
+    *GLOBAL_OUTPUT.read().expect("output lock poisoned")
 }
 
 /// Owned bundle of the four file-source slices that feed a
@@ -394,7 +418,8 @@ pub(crate) fn resolve_fetch_policy(cwd: &std::path::Path) -> aube_registry::conf
         .map(|(_, raw)| raw)
         .unwrap_or_default();
     let env = aube_settings::values::process_env();
-    let ctx = files.ctx(&workspace_yaml, env, fetch_cli_overrides());
+    let fetch_cli_overrides = fetch_cli_overrides();
+    let ctx = files.ctx(&workspace_yaml, env, &fetch_cli_overrides);
     aube_registry::config::FetchPolicy::from_ctx(&ctx)
 }
 

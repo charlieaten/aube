@@ -31,6 +31,7 @@ mod unreviewed_builds;
 mod workspace;
 
 use advisory::resolve_osv_routing_settings;
+#[allow(unused_imports)]
 pub use args::{InstallArgs, InstallOptions};
 pub(crate) use bin_linking::{PkgJsonCache, link_dep_bins, materialized_pkg_dir};
 pub use dep_selection::DepSelection;
