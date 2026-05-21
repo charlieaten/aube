@@ -9,3 +9,11 @@
 /crates/aube-resolver/data/primer-top*.json
 /crates/aube-resolver/data/primer-top*.rkyv.zst
 /crates/aube-resolver/data/popular-top*.json
+/_build
+/deps
+/priv
+/checksum-*.exs
+/beam/_build
+/beam/deps
+/beam/priv
+/beam/checksum-*.exs

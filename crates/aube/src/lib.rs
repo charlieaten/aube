@@ -607,6 +607,23 @@ pub fn cli_main(embedder: &'static aube_util::Embedder) -> i32 {
     cli_main_with_defaults(embedder, Vec::new())
 }
 
+/// Run aube's complete CLI against an explicit argv vector.
+///
+/// The first element is the program name, just like [`std::env::args_os`].
+/// This is intended for command hosts such as a Mix task that need to forward
+/// arguments without replacing the embedding process's real argv. Like
+/// [`cli_main`], it renders diagnostics and returns the process-style exit
+/// code instead of terminating the host.
+///
+/// A complete CLI invocation initializes process-global command state and is
+/// therefore a one-shot operation for a host process. Long-lived hosts that
+/// run multiple package operations should use the invocation-scoped
+/// [`embed`] facade instead.
+#[must_use]
+pub fn cli_main_from(embedder: &'static aube_util::Embedder, argv: Vec<std::ffi::OsString>) -> i32 {
+    cli_main_from_with_defaults(embedder, Vec::new(), argv, false)
+}
+
 /// The root command metadata for the embeddable command layer.
 ///
 /// This preserves the command-surface entry point for embedders while exposing
@@ -670,6 +687,15 @@ pub fn cli_main_with_defaults(
     embedder: &'static aube_util::Embedder,
     defaults: Vec<(String, String)>,
 ) -> i32 {
+    cli_main_from_with_defaults(embedder, defaults, std::env::args_os().collect(), true)
+}
+
+fn cli_main_from_with_defaults(
+    embedder: &'static aube_util::Embedder,
+    defaults: Vec<(String, String)>,
+    argv: Vec<OsString>,
+    can_mutate_process_env: bool,
+) -> i32 {
     // Register the binary's embedder profile before anything reads branding,
     // and its setting defaults before anything resolves settings. Both are
     // idempotent — a no-op if already set (e.g. a test harness that
@@ -698,7 +724,7 @@ pub fn cli_main_with_defaults(
         aube_util::diag::flush();
         prev_hook(info);
     }));
-    let result = inner_main();
+    let result = inner_main(argv, can_mutate_process_env);
     aube_util::diag::flush();
     // Drain any in-flight slow-metadata group whose debounce window
     // hasn't fired yet. install pipelines also flush at end-of-resolve
@@ -755,8 +781,7 @@ fn report_exit_code(report: &miette::Report) -> i32 {
     aube_codes::exit::EXIT_GENERIC
 }
 
-fn inner_main() -> miette::Result<i32> {
-    let mut argv: Vec<OsString> = std::env::args_os().collect();
+fn inner_main(mut argv: Vec<OsString>, can_mutate_process_env: bool) -> miette::Result<i32> {
     // An embedding host's executable is what lifecycle scripts see as
     // `npm_execpath` (through aube's shim) — and its own CLI is not aube's.
     // The shim marks the invocation with a private token the host forwards
@@ -802,7 +827,9 @@ fn inner_main() -> miette::Result<i32> {
     // `yarn` resolve to this binary. Once aube is running, scrub that
     // directory before any runtime probe or child spawn can recursively
     // rediscover the shim as the "real" tool.
-    tool_shims::sanitize_process_path();
+    if can_mutate_process_env {
+        tool_shims::sanitize_process_path();
+    }
     let mut argv = rewrite_multicall_argv(argv);
     // Shim rewrites can translate foreign flags (npm's `--legacy-peer-deps`) into
     // `--config.` overrides. Explicit user overrides stay later so they win.
@@ -875,18 +902,30 @@ fn inner_main() -> miette::Result<i32> {
     // here, and only then enter the async body.
     let color_mode = resolve_color_mode(&cli);
     if matches!(color_mode, ColorMode::Never) {
-        // SAFETY: single-threaded `main` — no other threads exist yet.
-        unsafe {
-            std::env::set_var("NO_COLOR", "1");
-            std::env::remove_var("FORCE_COLOR");
-            std::env::remove_var("CLICOLOR_FORCE");
+        if can_mutate_process_env {
+            // SAFETY: standalone cli_main runs on single-threaded `main` — no
+            // other threads exist yet.
+            unsafe {
+                std::env::set_var("NO_COLOR", "1");
+                std::env::remove_var("FORCE_COLOR");
+                std::env::remove_var("CLICOLOR_FORCE");
+            }
+        } else {
+            console::set_colors_enabled(false);
+            console::set_colors_enabled_stderr(false);
         }
     } else if matches!(color_mode, ColorMode::Always) {
-        // SAFETY: single-threaded `main` — no other threads exist yet.
-        unsafe {
-            std::env::set_var("FORCE_COLOR", "1");
-            std::env::set_var("CLICOLOR_FORCE", "1");
-            std::env::remove_var("NO_COLOR");
+        if can_mutate_process_env {
+            // SAFETY: standalone cli_main runs on single-threaded `main` — no
+            // other threads exist yet.
+            unsafe {
+                std::env::set_var("FORCE_COLOR", "1");
+                std::env::set_var("CLICOLOR_FORCE", "1");
+                std::env::remove_var("NO_COLOR");
+            }
+        } else {
+            console::set_colors_enabled(true);
+            console::set_colors_enabled_stderr(true);
         }
     } else if ci_renders_ansi() && !env_disables_color() {
         // Auto + a CI runner whose log viewer renders ANSI, and the

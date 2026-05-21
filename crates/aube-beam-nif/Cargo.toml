@@ -1,0 +1,18 @@
+[package]
+name = "aube_beam_nif"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aube = { workspace = true }
+aube-codes = { workspace = true }
+rustler = "0.37.3"
+tokio = { workspace = true }
