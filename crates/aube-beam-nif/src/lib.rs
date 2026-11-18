@@ -6,6 +6,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+#[cfg(target_os = "macos")]
+mod node_probe;
+
 mod atoms {
     rustler::atoms! {
         ok,
@@ -78,6 +81,7 @@ fn run_cli<'a>(env: Env<'a>, args: Vec<String>) -> NifResult<Term<'a>> {
             let argv = std::iter::once(OsString::from("aube"))
                 .chain(args.into_iter().map(OsString::from))
                 .collect();
+            initialize_embedder();
             aube::cli_main_from(&embed::AUBE, argv)
         });
     let result = match result {
@@ -226,7 +230,11 @@ fn invalid_argument(message: impl Into<String>) -> InstallFailure {
 
 fn initialize_embedder() {
     static INITIALIZED: OnceLock<()> = OnceLock::new();
-    INITIALIZED.get_or_init(|| embed::initialize(&embed::AUBE, Vec::new()));
+    INITIALIZED.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        embed::set_node_version_probe(node_probe::version);
+        embed::initialize(&embed::AUBE, Vec::new());
+    });
 }
 
 fn runtime() -> Result<&'static tokio::runtime::Runtime, InstallFailure> {

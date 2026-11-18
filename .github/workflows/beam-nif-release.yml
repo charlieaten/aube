@@ -2,6 +2,11 @@ name: beam-nif-release
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_assets:
+        description: Attach build artifacts to a GitHub Release
+        type: boolean
+        default: false
   push:
     paths:
       - ".github/workflows/beam-nif-release.yml"
@@ -31,12 +36,15 @@ jobs:
     outputs:
       project-version: ${{ steps.version.outputs.project-version }}
       release-tag: ${{ steps.version.outputs.release-tag }}
+      publish-assets: ${{ steps.version.outputs.publish-assets }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Extract package version
         id: version
         shell: bash
+        env:
+          PUBLISH_ASSETS: ${{ (github.event_name == 'push' && github.ref_name == 'main') || inputs.publish_assets || false }}
         run: |
           project_version="$(sed -n 's/^  @version "\(.*\)"/\1/p' beam/mix.exs | head -n1)"
           if [ -z "$project_version" ]; then
@@ -50,9 +58,11 @@ jobs:
           {
             echo "project-version=$project_version"
             echo "release-tag=v${project_version}"
+            echo "publish-assets=$PUBLISH_ASSETS"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create or update GitHub release
+        if: steps.version.outputs.publish-assets == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -206,6 +216,7 @@ jobs:
           path: ${{ steps.build-crate.outputs.file-path }}
 
       - name: Ensure GitHub release exists
+        if: needs.prepare-release.outputs.publish-assets == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -228,6 +239,7 @@ jobs:
           fi
 
       - name: Attach artifact to GitHub release
+        if: needs.prepare-release.outputs.publish-assets == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -242,7 +254,7 @@ jobs:
     name: Generate checksum helper output
     runs-on: ubuntu-22.04
     timeout-minutes: 20
-    needs: build
+    needs: [prepare-release, build]
     permissions:
       contents: write
     steps:
@@ -285,7 +297,7 @@ jobs:
           path: beam/checksum-*.exs
 
       - name: Commit checksum file
-        if: github.ref_type == 'branch'
+        if: github.ref_type == 'branch' && needs.prepare-release.outputs.publish-assets == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

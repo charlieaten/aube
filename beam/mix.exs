@@ -1,7 +1,7 @@
 defmodule Aube.MixProject do
   use Mix.Project
 
-  @version "2.10.1-alpha.1"
+  @version "2.10.1-alpha.2"
   @source_url "https://github.com/charlieaten/aube"
 
   def project do

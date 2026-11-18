@@ -16,3 +16,9 @@ aube = { workspace = true }
 aube-codes = { workspace = true }
 rustler = "0.37.3"
 tokio = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+tempfile = "3"

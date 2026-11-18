@@ -584,7 +584,9 @@ version = "2.10.1"
 dependencies = [
  "aube",
  "aube-codes",
+ "libc",
  "rustler",
+ "tempfile",
  "tokio",
 ]
 

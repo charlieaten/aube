@@ -113,6 +113,13 @@ pub fn host() -> &'static Host {
     aube_util::embedder()
 }
 
+/// Use a host-provided `node --version` probe instead of spawning and
+/// waiting for a child with Rust's default process handling. Register the
+/// probe before running Aube commands. The first registration wins.
+pub fn set_node_version_probe(probe: fn(&Path) -> Option<String>) {
+    let _ = crate::engines::HOST_NODE_VERSION_PROBE.set(probe);
+}
+
 /// Whether `project_dir` declares a Node workspace.
 ///
 /// This recognizes Aube and pnpm workspace YAML plus the npm/Yarn/Bun

@@ -28,6 +28,7 @@ use aube_store::PackageIndex;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// The version reported for `engines.<self>` checks. Reads the active
 /// embedder's `version` so guardrails here match the version used elsewhere.
@@ -108,6 +109,10 @@ pub fn effective_node_version(override_: Option<&str>) -> Option<String> {
     resolve_node_version(None)
 }
 
+type NodeVersionProbe = fn(&Path) -> Option<String>;
+
+pub(crate) static HOST_NODE_VERSION_PROBE: OnceLock<NodeVersionProbe> = OnceLock::new();
+
 /// Probe `program --version`, memoized **per program path** — spawning is
 /// cheap individually but this is hit once per install and again by later
 /// callers in the same process (workspace installs, `aube add` chaining
@@ -126,22 +131,25 @@ fn probe_node_version(program: &std::path::Path) -> Option<String> {
     if let Some(cached) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(program) {
         return cached.clone();
     }
-    let probed = (|| {
-        let output = std::process::Command::new(program)
-            .arg("--version")
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let s = String::from_utf8(output.stdout).ok()?;
-        Some(s.trim().trim_start_matches('v').to_string())
-    })();
+    let probe = HOST_NODE_VERSION_PROBE.get().copied().unwrap_or(probe_node);
+    let probed = probe(program).map(|output| output.trim().trim_start_matches('v').to_string());
     cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(program.to_path_buf(), probed.clone());
     probed
+}
+
+fn probe_node(program: &Path) -> Option<String> {
+    let output = std::process::Command::new(program)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        String::from_utf8(output.stdout).ok()
+    } else {
+        None
+    }
 }
 
 /// Test whether `version` satisfies `range`. A version or range we can't

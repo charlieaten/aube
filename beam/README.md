@@ -24,10 +24,15 @@ directory contains the BEAM/Hex distribution surface.
 ## Preparing a Hex release
 
 Run the `beam-nif-release` GitHub Actions workflow for the release commit.
-Check that the GitHub release tag matches the version in `beam/mix.exs` and
-that the workflow produced a checksum for every platform in the build matrix.
-Use the generated `beam/checksum-Elixir.Aube.Native.exs` when staging the Hex
-package.
+A branch build outside `main` produces the platform archives and the
+`rustler-precompiled-checksum` artifact. To place those archives at the
+URL used by Rustler, run the workflow for the same commit with
+`publish_assets` enabled, or push the release commit to `main`.
+
+Check that the GitHub release tag matches the version in `beam/mix.exs`
+and that the checksum artifact covers every platform in the build matrix.
+Copy the matching `checksum-Elixir.Aube.Native.exs` into `beam/` before
+staging the Hex package.
 
 From the repository root, stage the package and validate it locally:
 
