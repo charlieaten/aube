@@ -112,9 +112,11 @@ fn install<'a>(env: Env<'a>, opts: InstallOpts) -> NifResult<Term<'a>> {
 
     initialize_embedder();
     let started = Instant::now();
-    let result = runtime.block_on(embed::install(options));
+    // Poll the install future on a Tokio worker. A deeply nested install can
+    // exhaust the smaller stack of a BEAM dirty scheduler.
+    let result = runtime.block_on(runtime.spawn(embed::install(options)));
     Ok(match result {
-        Ok(()) => (
+        Ok(Ok(())) => (
             atoms::ok(),
             InstallResult {
                 project_dir: project_dir.to_string_lossy().into_owned(),
@@ -122,7 +124,7 @@ fn install<'a>(env: Env<'a>, opts: InstallOpts) -> NifResult<Term<'a>> {
             },
         )
             .encode(env),
-        Err(error) => (
+        Ok(Err(error)) => (
             atoms::error(),
             InstallFailure {
                 code: embed::error_code(&error),
@@ -130,6 +132,21 @@ fn install<'a>(env: Env<'a>, opts: InstallOpts) -> NifResult<Term<'a>> {
             },
         )
             .encode(env),
+        Err(error) => {
+            let code = if error.is_panic() {
+                aube_codes::errors::ERR_AUBE_FFI_PANIC
+            } else {
+                aube_codes::errors::ERR_AUBE_FFI_RUNTIME
+            };
+            (
+                atoms::error(),
+                InstallFailure {
+                    code: Some(code.to_string()),
+                    message: format!("aube install task failed: {error}"),
+                },
+            )
+                .encode(env)
+        }
     })
 }
 
