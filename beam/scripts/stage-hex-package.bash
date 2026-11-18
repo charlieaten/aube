@@ -21,6 +21,7 @@ for checksum in "${repo_root}"/beam/checksum-*.exs; do
 done
 shopt -u nullglob
 
+cp "${repo_root}/LICENSE" "$out/LICENSE.aube"
 cp "${repo_root}/Cargo.toml" "$out/Cargo.toml"
 cp "${repo_root}/Cargo.lock" "$out/Cargo.lock"
 

@@ -1,7 +1,7 @@
 defmodule Aube.MixProject do
   use Mix.Project
 
-  @version "1.29.1-alpha.1"
+  @version "2.10.1-alpha.1"
   @source_url "https://github.com/charlieaten/aube"
 
   def project do
@@ -54,7 +54,7 @@ defmodule Aube.MixProject do
 
   defp source_build_files do
     if File.dir?("crates") do
-      ["Cargo.toml", "Cargo.lock", "crates"]
+      ["Cargo.toml", "Cargo.lock", "LICENSE.aube", "crates"]
     else
       []
     end
